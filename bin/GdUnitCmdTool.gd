@@ -15,7 +15,6 @@ class CLIRunner extends Node:
 	const DEFAULT_REPORT_COUNT = 20
 	const RETURN_SUCCESS  =   0
 	const RETURN_ERROR    = 100
-	const RETURN_ERROR_HEADLESS_NOT_SUPPORTED  = 103
 	const RETURN_WARNING  = 101
 
 	var _state = READY
@@ -180,12 +179,8 @@ class CLIRunner extends Node:
 		_console.new_line()
 		
 		if DisplayServer.get_name() == "headless":
-			_console.prints_error("Headless mode is not supported!").new_line()
 			_console.print_color("Tests that use UI interaction do not work in headless mode because 'InputEvents' are not transported by the Godot engine and thus have no effect!", Color.CORNFLOWER_BLUE)\
 			.new_line().new_line()
-			_console.prints_error("Abnormal exit with %d" % RETURN_ERROR_HEADLESS_NOT_SUPPORTED)
-			quit(RETURN_ERROR_HEADLESS_NOT_SUPPORTED)
-			return
 		
 		var cmd_parser := CmdArgumentParser.new(_cmd_options, "GdUnitCmdTool.gd")
 		var result := cmd_parser.parse(OS.get_cmdline_args())
