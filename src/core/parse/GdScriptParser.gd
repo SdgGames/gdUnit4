@@ -1,6 +1,7 @@
 class_name GdScriptParser
 extends RefCounted
 
+const GdUnitTools := preload("res://addons/gdUnit4/src/core/GdUnitTools.gd")
 
 const ALLOWED_CHARACTERS := "0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\""
 
@@ -356,19 +357,19 @@ func _process_values(left: Token, token_stack: Array, operator: Token) -> Token:
 		var lvalue = left.value()
 		var value = null
 		var next_token_ = token_stack.pop_front() as Token
-	
-		if operator == OPERATOR_ADD:
-			value =  lvalue + next_token_.value()
-		elif operator == OPERATOR_SUB:
-			value =  lvalue - next_token_.value()
-		elif operator == OPERATOR_MUL:
-			value =  lvalue * next_token_.value()
-		elif operator == OPERATOR_DIV:
-			value =  lvalue / next_token_.value()
-		elif operator == OPERATOR_REMAINDER:
-			value =  lvalue & next_token_.value()
-		else:
-			assert(false, "Unsupported operator %s" % operator)
+		match operator:
+			OPERATOR_ADD:
+				value =  lvalue + next_token_.value()
+			OPERATOR_SUB:
+				value =  lvalue - next_token_.value()
+			OPERATOR_MUL:
+				value =  lvalue * next_token_.value()
+			OPERATOR_DIV:
+				value =  lvalue / next_token_.value()
+			OPERATOR_REMAINDER:
+				value =  lvalue & next_token_.value()
+			_:
+				assert(false, "Unsupported operator %s" % operator)
 		return Variable.new( str(value))
 	return operator
 
@@ -447,40 +448,40 @@ func parse_arguments(input: String) -> Array[GdFunctionArgument]:
 			while current_index < len(input):
 				token = next_token(input, current_index)
 				current_index += token._consumed
-				#match token:
 				if token.is_skippable():
 					continue
-				elif token == TOKEN_ARGUMENT_TYPE:
-					token = next_token(input, current_index)
-					if token == TOKEN_SPACE:
-						current_index += token._consumed
+				match token:
+					TOKEN_ARGUMENT_TYPE:
 						token = next_token(input, current_index)
-					arg_type = GdObjects.string_as_typeof(token._token)
-				elif token == TOKEN_ARGUMENT_TYPE_ASIGNMENT:
-					arg_value = _parse_end_function(input.substr(current_index), true)
-					current_index += arg_value.length()
-				elif token == TOKEN_ARGUMENT_ASIGNMENT:
-					token = next_token(input, current_index)
-					arg_value = _parse_end_function(input.substr(current_index), true)
-					current_index += arg_value.length()
-				elif token == TOKEN_BRACKET_OPEN:
-					bracket += 1
-					# if value a function?
-					if bracket > 1:
-						# complete the argument value
-						var func_begin = input.substr(current_index-TOKEN_BRACKET_OPEN._consumed)
-						var func_body = _parse_end_function(func_begin)
-						arg_value += func_body
-						# fix parse index to end of value
-						current_index += func_body.length() - TOKEN_BRACKET_OPEN._consumed - TOKEN_BRACKET_CLOSE._consumed
-				elif token == TOKEN_BRACKET_CLOSE:
-					bracket -= 1
-					# end of function
-					if bracket == 0:
-						break
-				elif token == TOKEN_ARGUMENT_SEPARATOR:
-					if bracket <= 1:
-						break
+						if token == TOKEN_SPACE:
+							current_index += token._consumed
+							token = next_token(input, current_index)
+						arg_type = GdObjects.string_as_typeof(token._token)
+					TOKEN_ARGUMENT_TYPE_ASIGNMENT:
+						arg_value = _parse_end_function(input.substr(current_index), true)
+						current_index += arg_value.length()
+					TOKEN_ARGUMENT_ASIGNMENT:
+						token = next_token(input, current_index)
+						arg_value = _parse_end_function(input.substr(current_index), true)
+						current_index += arg_value.length()
+					TOKEN_BRACKET_OPEN:
+						bracket += 1
+						# if value a function?
+						if bracket > 1:
+							# complete the argument value
+							var func_begin = input.substr(current_index-TOKEN_BRACKET_OPEN._consumed)
+							var func_body = _parse_end_function(func_begin)
+							arg_value += func_body
+							# fix parse index to end of value
+							current_index += func_body.length() - TOKEN_BRACKET_OPEN._consumed - TOKEN_BRACKET_CLOSE._consumed
+					TOKEN_BRACKET_CLOSE:
+						bracket -= 1
+						# end of function
+						if bracket == 0:
+							break
+					TOKEN_ARGUMENT_SEPARATOR:
+						if bracket <= 1:
+							break
 			arg_value = arg_value.lstrip(" ")
 			if arg_type == TYPE_NIL and arg_value != GdFunctionArgument.UNDEFINED:
 				if arg_value.begins_with("Color."):
@@ -565,7 +566,7 @@ func _parse_end_function(input: String, remove_trailing_char := false) -> String
 			"(": bracket_count += 1
 			")":
 				bracket_count -= 1
-				if bracket_count <= 0 and in_array <= 0:
+				if bracket_count < 0 and in_array <= 0:
 					end_of_func = true
 			",":
 				if bracket_count == 0 and in_array == 0:
@@ -664,8 +665,8 @@ func parse_func_name(row :String) -> String:
 	return token._token
 
 
-func parse_functions(rows :PackedStringArray, clazz_name :String, clazz_path :PackedStringArray, included_functions :PackedStringArray = PackedStringArray()) -> Array:
-	var func_descriptors := Array()
+func parse_functions(rows :PackedStringArray, clazz_name :String, clazz_path :PackedStringArray, included_functions := PackedStringArray()) -> Array[GdFunctionDescriptor]:
+	var func_descriptors :Array[GdFunctionDescriptor] = []
 	for rowIndex in rows.size():
 		var row = rows[rowIndex]
 		# step over inner class functions
@@ -777,9 +778,9 @@ func extract_functions(script :GDScript, clazz_name :String, clazz_path :PackedS
 	return parse_functions(source_code, clazz_name, clazz_path)
 
 
-func parse(clazz_name :String, clazz_path :PackedStringArray) -> Result:
+func parse(clazz_name :String, clazz_path :PackedStringArray) -> GdUnitResult:
 	if clazz_path.is_empty():
-		return Result.error("Invalid script path '%s'" % clazz_path)
+		return GdUnitResult.error("Invalid script path '%s'" % clazz_path)
 	var is_inner_class_ := is_inner_class(clazz_path)
 	var script :GDScript = load(clazz_path[0])
 	var function_descriptors := extract_functions(script, clazz_name, clazz_path)
@@ -791,4 +792,4 @@ func parse(clazz_name :String, clazz_path :PackedStringArray) -> Result:
 		function_descriptors = extract_functions(script, clazz_name, clazz_path)
 		gd_class.set_parent_clazz(GdClassDescriptor.new(clazz_name, is_inner_class_, function_descriptors))
 		script = script.get_base_script()
-	return Result.success(gd_class)
+	return GdUnitResult.success(gd_class)

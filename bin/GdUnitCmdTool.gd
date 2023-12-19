@@ -1,6 +1,8 @@
 #!/usr/bin/env -S godot -s
 extends SceneTree
 
+const GdUnitTools := preload("res://addons/gdUnit4/src/core/GdUnitTools.gd")
+
 #warning-ignore-all:return_value_discarded
 class CLIRunner extends Node:
 	
@@ -15,18 +17,18 @@ class CLIRunner extends Node:
 	const DEFAULT_REPORT_COUNT = 20
 	const RETURN_SUCCESS  =   0
 	const RETURN_ERROR    = 100
+	const RETURN_ERROR_HEADLESS_NOT_SUPPORTED  = 103
 	const RETURN_WARNING  = 101
 
 	var _state = READY
 	var _test_suites_to_process :Array
 	var _executor
+	var _cs_executor
 	var _report :GdUnitHtmlReport
 	var _report_dir: String
 	var _report_max: int = DEFAULT_REPORT_COUNT
 	var _runner_config := GdUnitRunnerConfig.new()
 	var _console := CmdConsole.new()
-	var _cs_executor
-	var _rtf :RichTextLabel
 	var _cmd_options: = CmdOptions.new([
 			CmdOption.new("-a, --add", "-a <directory|path of testsuite>", "Adds the given test suite or directory to the execution pipeline.", TYPE_STRING),
 			CmdOption.new("-i, --ignore", "-i <testsuite_name|testsuite_name:test-name>", "Adds the given test suite or test case to the ignore list.", TYPE_STRING),
@@ -48,21 +50,18 @@ class CLIRunner extends Node:
 	func _ready():
 		_state = INIT
 		_report_dir = GdUnitTools.current_dir() + "reports"
-		_executor = load("res://addons/gdUnit4/src/core/GdUnitExecutor.gd").new()
+		_executor = load("res://addons/gdUnit4/src/core/execution/GdUnitTestSuiteExecutor.gd").new()
 		# stop checked first test failure to fail fast
 		_executor.fail_fast(true)
 		
-		if GdUnitTools.is_mono_supported():
-			_cs_executor = GdUnit3MonoAPI.create_executor(self)
-		
+		if GdUnit4MonoApiLoader.is_mono_supported():
+			prints("GdUnit4Mono Version %s loaded." % GdUnit4MonoApiLoader.version())
+			_cs_executor = GdUnit4MonoApiLoader.create_executor(self)
 		var err = GdUnitSignals.instance().gdunit_event.connect(Callable(self, "_on_gdunit_event"))
 		if err != OK:
 			prints("gdUnitSignals failed")
 			push_error("Error checked startup, can't connect executor for 'send_event'")
 			quit(RETURN_ERROR)
-		add_child(_executor)
-		_rtf = RichTextLabel.new()
-		add_child(_rtf)
 	
 	
 	func _process(_delta):
@@ -78,10 +77,11 @@ class CLIRunner extends Node:
 					set_process(false)
 					# process next test suite
 					var test_suite := _test_suites_to_process.pop_front() as Node
-					add_child(test_suite)
-					var executor = _cs_executor if GdObjects.is_cs_test_suite(test_suite) else _executor
-					executor.Execute(test_suite)
-					await executor.ExecutionCompleted
+					if _cs_executor != null and _cs_executor.IsExecutable(test_suite):
+						_cs_executor.Execute(test_suite)
+						await _cs_executor.ExecutionCompleted
+					else:
+						await _executor.execute(test_suite)
 					set_process(true)
 			STOP:
 				_state = EXIT
@@ -90,16 +90,9 @@ class CLIRunner extends Node:
 	
 	
 	func quit(code :int) -> void:
-		if is_instance_valid(_executor):
-			_executor.free()
-		if is_instance_valid(_rtf):
-			_rtf.free()
 		GdUnitTools.dispose_all()
+		await GdUnitMemoryObserver.gc_on_guarded_instances()
 		await get_tree().physics_frame
-		prints("-Orphan nodes report-----------------------")
-		Window.print_orphan_nodes()
-		prints("-SceneTree report-----------------------")
-		get_tree().root.print_tree_pretty()
 		get_tree().quit(code)
 	
 	
@@ -179,8 +172,12 @@ class CLIRunner extends Node:
 		_console.new_line()
 		
 		if DisplayServer.get_name() == "headless":
+			_console.prints_error("Headless mode is not supported!").new_line()
 			_console.print_color("Tests that use UI interaction do not work in headless mode because 'InputEvents' are not transported by the Godot engine and thus have no effect!", Color.CORNFLOWER_BLUE)\
 			.new_line().new_line()
+			_console.prints_error("Abnormal exit with %d" % RETURN_ERROR_HEADLESS_NOT_SUPPORTED)
+			quit(RETURN_ERROR_HEADLESS_NOT_SUPPORTED)
+			return
 		
 		var cmd_parser := CmdArgumentParser.new(_cmd_options, "GdUnitCmdTool.gd")
 		var result := cmd_parser.parse(OS.get_cmdline_args())
@@ -292,8 +289,8 @@ class CLIRunner extends Node:
 		return total
 	
 	
-	func PublishEvent(data) -> void:
-		_on_gdunit_event(GdUnitEvent.new().deserialize(data.AsDictionary()))
+	func PublishEvent(data :Dictionary) -> void:
+		_on_gdunit_event(GdUnitEvent.new().deserialize(data))
 	
 	
 	func _on_gdunit_event(event :GdUnitEvent):
@@ -303,7 +300,7 @@ class CLIRunner extends Node:
 			GdUnitEvent.STOP:
 				var report_path := _report.write()
 				_report.delete_history(_report_max)
-				JUnitXmlReport.new(_report._report_path, _report.iteration(), _rtf).write(_report)
+				JUnitXmlReport.new(_report._report_path, _report.iteration()).write(_report)
 				_console.prints_color("Total test suites: %s" % _report.suite_count(), Color.DARK_SALMON)
 				_console.prints_color("Total test cases:  %s" % _report.test_count(), Color.DARK_SALMON)
 				_console.prints_color("Total time:        %s" % LocalTime.elapsed(_report.duration()), Color.DARK_SALMON)
@@ -311,17 +308,27 @@ class CLIRunner extends Node:
 			GdUnitEvent.TESTSUITE_BEFORE:
 				_report.add_testsuite_report(GdUnitTestSuiteReport.new(event.resource_path(), event.suite_name()))
 			GdUnitEvent.TESTSUITE_AFTER:
-				_report.update_test_suite_report(event.resource_path(), event.elapsed_time())
+				_report.update_test_suite_report(
+					event.resource_path(),
+					event.elapsed_time(),
+					event.is_error(),
+					event.is_failed(),
+					event.is_warning(),
+					event.is_skipped(),
+					event.skipped_count(),
+					event.failed_count(),
+					event.orphan_nodes(),
+					event.reports())
 			GdUnitEvent.TESTCASE_BEFORE:
-				_report.add_testcase_report(event.resource_path(), GdUnitTestCaseReport.new(_rtf, event.resource_path(), event.suite_name(), event.test_name()))
+				_report.add_testcase_report(event.resource_path(), GdUnitTestCaseReport.new(event.resource_path(), event.suite_name(), event.test_name()))
 			GdUnitEvent.TESTCASE_AFTER:
 				var test_report := GdUnitTestCaseReport.new(
-					_rtf,
 					event.resource_path(),
 					event.suite_name(),
 					event.test_name(),
 					event.is_error(),
 					event.is_failed(),
+					event.failed_count(),
 					event.orphan_nodes(),
 					event.is_skipped(),
 					event.reports(),
@@ -353,17 +360,17 @@ class CLIRunner extends Node:
 				_print_status(event)
 				_print_failure_report(event.reports())
 			GdUnitEvent.TESTSUITE_AFTER:
+				_print_failure_report(event.reports())
 				_print_status(event)
 				_console.prints_color("	| %d total | %d error | %d failed | %d skipped | %d orphans |\n" % [_report.test_count(), _report.error_count(), _report.failure_count(), _report.skipped_count(), _report.orphan_count()], Color.ANTIQUE_WHITE)
 	
 	
 	func _print_failure_report(reports :Array) -> void:
 		for report in reports:
-			_rtf.clear()
-			_rtf.parse_bbcode(report._to_string())
 			if report.is_failure() or report.is_error() or report.is_warning() or report.is_skipped():
 				_console.prints_color("	Report:", Color.DARK_TURQUOISE, CmdConsole.BOLD|CmdConsole.UNDERLINE)
-				for line in _rtf.get_parsed_text().split("\n"):
+				var text = GdUnitTools.richtext_normalize(report._to_string())
+				for line in text.split("\n"):
 					_console.prints_color("		%s" % line, Color.DARK_TURQUOISE)
 		_console.new_line()
 	
@@ -391,4 +398,6 @@ func _initialize():
 
 func _finalize():
 	prints("Finallize ..")
-	_cli_runner.free()
+	prints("-Orphan nodes report-----------------------")
+	Window.print_orphan_nodes()
+	prints("Finallize .. done")

@@ -8,8 +8,17 @@ func test_${func_name}() -> void:
 	assert_not_yet_implemented()
 """
 
+
+# we exclude the gdunit source directorys by default
+const exclude_scan_directories = [
+	"res://addons/gdUnit4/bin",
+	"res://addons/gdUnit4/src",
+	"res://reports"]
+
+
 var _script_parser := GdScriptParser.new()
 var _extends_test_suite_classes := Array()
+var _expression_runner := GdUnitExpressionRunner.new()
 
 
 func scan_testsuite_classes() -> void:
@@ -38,6 +47,8 @@ func scan(resource_path :String) -> Array[Node]:
 
 
 func _scan_test_suites(dir :DirAccess, collected_suites :Array[Node]) -> Array[Node]:
+	if exclude_scan_directories.has(dir.get_current_dir()):
+		return collected_suites
 	prints("Scanning for test suites in:", dir.get_current_dir())
 	dir.list_dir_begin() # TODOGODOT4 fill missing arguments https://github.com/godotengine/godot/pull/40547
 	var file_name := dir.get_next()
@@ -48,9 +59,12 @@ func _scan_test_suites(dir :DirAccess, collected_suites :Array[Node]) -> Array[N
 			if sub_dir != null:
 				_scan_test_suites(sub_dir, collected_suites)
 		else:
+			var time = LocalTime.now()
 			var test_suite := _parse_is_test_suite(resource_path)
 			if test_suite:
 				collected_suites.append(test_suite)
+			if OS.is_stdout_verbose() and time.elapsed_since_ms() > 300:
+				push_warning("Scanning of test-suite '%s' took more than 300ms: " % resource_path, time.elapsed_since())
 		file_name = dir.get_next()
 	return collected_suites
 
@@ -65,8 +79,8 @@ static func _file(dir :DirAccess, file_name :String) -> String:
 func _parse_is_test_suite(resource_path :String) -> Node:
 	if not GdUnitTestSuiteScanner._is_script_format_supported(resource_path):
 		return null
-	if GdUnit3MonoAPI.is_test_suite(resource_path):
-		return GdUnit3MonoAPI.parse_test_suite(resource_path)
+	if GdUnit4MonoApiLoader.is_test_suite(resource_path):
+		return GdUnit4MonoApiLoader.parse_test_suite(resource_path)
 	var script :Script = ResourceLoader.load(resource_path)
 	if not GdObjects.is_test_suite(script):
 		return null
@@ -79,7 +93,7 @@ static func _is_script_format_supported(resource_path :String) -> bool:
 	var ext := resource_path.get_extension()
 	if ext == "gd":
 		return true
-	return GdUnit3MonoAPI.is_csharp_file(resource_path)
+	return GdUnit4MonoApiLoader.is_csharp_file(resource_path)
 
 
 func _parse_test_suite(script :GDScript) -> GdUnitTestSuite:
@@ -114,50 +128,79 @@ static func parse_test_suite_name(script :Script) -> String:
 	return script.resource_path.get_file().replace(".gd", "")
 
 
+func _handle_test_suite_arguments(test_suite, script :GDScript, fd :GdFunctionDescriptor):
+	for arg in fd.args():
+		match arg.name():
+			_TestCase.ARGUMENT_SKIP:
+				var result = _expression_runner.execute(script, arg.value_as_string())
+				if result is bool:
+					test_suite.__is_skipped = result
+				else:
+					push_error("Test expression '%s' cannot be evaluated because it is not of type bool!" % arg.value_as_string())
+			_TestCase.ARGUMENT_SKIP_REASON:
+				test_suite.__skip_reason = arg.value_as_string()
+			_:
+				push_error("Unsuported argument `%s` found on before() at '%s'!" % [arg.name(), script.resource_path])
+
+
+func _handle_test_case_arguments(test_suite, script :GDScript, fd :GdFunctionDescriptor):
+	var timeout := _TestCase.DEFAULT_TIMEOUT
+	var iterations := Fuzzer.ITERATION_DEFAULT_COUNT
+	var seed_value := -1
+	var is_skipped := false
+	var skip_reason := "Unknown."
+	var fuzzers :Array[GdFunctionArgument] = []
+	var test := _TestCase.new()
+	
+	for arg in fd.args():
+		# verify argument is allowed
+		# is test using fuzzers?
+		if arg.type() == GdObjects.TYPE_FUZZER:
+			fuzzers.append(arg)
+		elif arg.has_default():
+			match arg.name():
+				_TestCase.ARGUMENT_TIMEOUT:
+					timeout = arg.default()
+				_TestCase.ARGUMENT_SKIP:
+					var result = _expression_runner.execute(script, arg.value_as_string())
+					if result is bool:
+						is_skipped = result
+					else:
+						push_error("Test expression '%s' cannot be evaluated because it is not of type bool!" % arg.value_as_string())
+				_TestCase.ARGUMENT_SKIP_REASON:
+					skip_reason = arg.value_as_string()
+				Fuzzer.ARGUMENT_ITERATIONS:
+					iterations = arg.default()
+				Fuzzer.ARGUMENT_SEED:
+					seed_value = arg.default()
+	# create new test
+	test.configure(fd.name(), fd.line_number(), script.resource_path, timeout, fuzzers, iterations, seed_value)
+	test.skip(is_skipped, skip_reason)
+	_validate_argument(fd, test)
+	test_suite.add_child(test)
+	# is parameterized test?
+	if fd.is_parameterized():
+		var test_paramaters := GdTestParameterSet.extract_test_parameters(test_suite.get_script(), fd)
+		var error := GdTestParameterSet.validate(fd.args(), test_paramaters)
+		if not error.is_empty():
+			test.skip(true, error)
+		test.set_test_parameters(test_paramaters)
+
+
 func _parse_and_add_test_cases(test_suite, script :GDScript, test_case_names :PackedStringArray):
 	var test_cases_to_find = Array(test_case_names)
+	var functions_to_scan := test_case_names
+	functions_to_scan.append("before")
 	var source := _script_parser.load_source_code(script, [script.resource_path])
-	var functions = _script_parser.parse_functions(source, "", [script.resource_path], test_case_names)
-	for function in functions:
-		var fd :GdFunctionDescriptor = function
+	var function_descriptors := _script_parser.parse_functions(source, "", [script.resource_path], functions_to_scan)
+	for fd in function_descriptors:
+		if fd.name() == "before":
+			_handle_test_suite_arguments(test_suite, script, fd)
 		if test_cases_to_find.has(fd.name()):
-			var timeout := _TestCase.DEFAULT_TIMEOUT
-			var iterations := Fuzzer.ITERATION_DEFAULT_COUNT
-			var seed_value := -1
-			var fuzzers :Array[GdFunctionArgument] = []
-			var test := _TestCase.new()
-			
-			_validate_argument(fd, test)
-			for arg in fd.args():
-				var fa := arg as GdFunctionArgument
-				# verify argument is allowed
-				# is test using fuzzers?
-				if fa.type() == GdObjects.TYPE_FUZZER:
-					fuzzers.append(fa)
-				elif fa.has_default():
-					match fa.name():
-						_TestCase.ARGUMENT_TIMEOUT:
-							timeout = fa.default()
-						Fuzzer.ARGUMENT_ITERATIONS:
-							iterations = fa.default()
-						Fuzzer.ARGUMENT_SEED:
-							seed_value = fa.default()
-						#_:
-						#	push_error("Invalid test case arguemnt found. ", fa)
-					continue
-			# create new test
-			test.configure(fd.name(), fd.line_number(), script.resource_path, timeout, fuzzers, iterations, seed_value)
-			test_suite.add_child(test)
-			# is parameterized test?
-			if fd.is_parameterized():
-				var test_paramaters := GdTestParameterSet.extract_test_parameters(test_suite.get_script(), fd)
-				var error := GdTestParameterSet.validate(fd.args(), test_paramaters)
-				if not error.is_empty():
-					test.skip(true, error)
-				test.set_test_parameters(test_paramaters)
+			_handle_test_case_arguments(test_suite, script, fd)
 
 
-const TEST_CASE_ARGUMENTS = [_TestCase.ARGUMENT_TIMEOUT, Fuzzer.ARGUMENT_ITERATIONS, Fuzzer.ARGUMENT_SEED]
+const TEST_CASE_ARGUMENTS = [_TestCase.ARGUMENT_TIMEOUT, _TestCase.ARGUMENT_SKIP, _TestCase.ARGUMENT_SKIP_REASON, Fuzzer.ARGUMENT_ITERATIONS, Fuzzer.ARGUMENT_SEED]
 
 func _validate_argument(fd :GdFunctionDescriptor, test_case :_TestCase) -> void:
 	if fd.is_parameterized():
@@ -187,12 +230,12 @@ static func _to_naming_convention(file_name :String) -> String:
 static func resolve_test_suite_path(source_script_path :String, test_root_folder :String = "test") -> String:
 	var file_name = source_script_path.get_basename().get_file()
 	var suite_name := _to_naming_convention(file_name)
-	if test_root_folder.is_empty():
+	if test_root_folder.is_empty() or test_root_folder == "/":
 		return source_script_path.replace(file_name, suite_name)
 	
 	# is user tmp
 	if source_script_path.begins_with("user://tmp"):
-		return source_script_path.replace("user://tmp", "user://tmp/" + test_root_folder).replace(file_name, suite_name)
+		return normalize_path(source_script_path.replace("user://tmp", "user://tmp/" + test_root_folder)).replace(file_name, suite_name)
 	
 	# at first look up is the script under a "src" folder located
 	var test_suite_path :String
@@ -211,21 +254,25 @@ static func resolve_test_suite_path(source_script_path :String, test_root_folder
 			test_suite_path = paths[0] + "//" + test_root_folder
 			for index in range(1, paths.size()):
 				test_suite_path += "/" + paths[index]
-	return test_suite_path.replace(file_name, suite_name)
+	return normalize_path(test_suite_path).replace(file_name, suite_name)
 
 
-static func create_test_suite(test_suite_path :String, source_path :String) -> Result:
+static func normalize_path(path :String) -> String:
+	return path.replace("///", "/")
+
+
+static func create_test_suite(test_suite_path :String, source_path :String) -> GdUnitResult:
 	# create directory if not exists
 	if not DirAccess.dir_exists_absolute(test_suite_path.get_base_dir()):
 		var error := DirAccess.make_dir_recursive_absolute(test_suite_path.get_base_dir())
 		if error != OK:
-			return Result.error("Can't create directoy  at: %s. Error code %s" % [test_suite_path.get_base_dir(), error])
+			return GdUnitResult.error("Can't create directoy  at: %s. Error code %s" % [test_suite_path.get_base_dir(), error])
 	var script := GDScript.new()
 	script.source_code = GdUnitTestSuiteTemplate.build_template(source_path)
 	var error := ResourceSaver.save(script, test_suite_path)
 	if error != OK:
-		return Result.error("Can't create test suite at: %s. Error code %s" % [test_suite_path, error])
-	return Result.success(test_suite_path)
+		return GdUnitResult.error("Can't create test suite at: %s. Error code %s" % [test_suite_path, error])
+	return GdUnitResult.success(test_suite_path)
 
 
 static func get_test_case_line_number(resource_path :String, func_name :String) -> int:
@@ -245,7 +292,7 @@ static func get_test_case_line_number(resource_path :String, func_name :String) 
 	return -1
 
 
-static func add_test_case(resource_path :String, func_name :String)  -> Result:
+static func add_test_case(resource_path :String, func_name :String)  -> GdUnitResult:
 	var script := load(resource_path) as GDScript
 	# count all exiting lines and add two as space to add new test case
 	var line_number := count_lines(script) + 2
@@ -260,8 +307,8 @@ static func add_test_case(resource_path :String, func_name :String)  -> Result:
 	script.source_code += func_body
 	var error := ResourceSaver.save(script, resource_path)
 	if error != OK:
-		return Result.error("Can't add test case at: %s to '%s'. Error code %s" % [func_name, resource_path, error])
-	return Result.success({ "path" : resource_path, "line" : line_number})
+		return GdUnitResult.error("Can't add test case at: %s to '%s'. Error code %s" % [func_name, resource_path, error])
+	return GdUnitResult.success({ "path" : resource_path, "line" : line_number})
 
 
 static func count_lines(script : GDScript) -> int:
@@ -280,10 +327,10 @@ static func test_case_exists(test_suite_path :String, func_name :String) -> bool
 			return true
 	return false
 
-static func create_test_case(test_suite_path :String, func_name :String, source_script_path :String) -> Result:
+static func create_test_case(test_suite_path :String, func_name :String, source_script_path :String) -> GdUnitResult:
 	if test_case_exists(test_suite_path, func_name):
 		var line_number := get_test_case_line_number(test_suite_path, func_name)
-		return Result.success({ "path" : test_suite_path, "line" : line_number})
+		return GdUnitResult.success({ "path" : test_suite_path, "line" : line_number})
 	
 	if not test_suite_exists(test_suite_path):
 		var result := create_test_suite(test_suite_path, source_script_path)

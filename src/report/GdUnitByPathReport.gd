@@ -2,16 +2,16 @@ class_name GdUnitByPathReport
 extends GdUnitReportSummary
 
 
-func _init(path :String,reports :Array):
-	_resource_path = path
-	_reports = reports
+func _init(path_ :String, reports_ :Array[GdUnitReportSummary]):
+	_resource_path = path_
+	_reports = reports_
 
 
-static func sort_reports_by_path(reports :Array) -> Dictionary:
+static func sort_reports_by_path(reports_ :Array[GdUnitReportSummary]) -> Dictionary:
 	var by_path := Dictionary()
-	for report in reports:
+	for report in reports_:
 		var suite_path :String = report.path()
-		var suite_report :Array = by_path.get(suite_path, Array())
+		var suite_report :Array[GdUnitReportSummary] = by_path.get(suite_path, [] as Array[GdUnitReportSummary])
 		suite_report.append(report)
 		by_path[suite_path] = suite_report
 	return by_path
@@ -38,10 +38,10 @@ func write(report_dir :String) -> String:
 	return output_path
 
 
-static func apply_testsuite_reports(report_dir :String, template :String, reports :Array) -> String:
+func apply_testsuite_reports(report_dir :String, template :String, reports_ :Array[GdUnitReportSummary]) -> String:
 	var table_records := PackedStringArray()
 	
-	for report in reports:
+	for report in reports_:
 		var report_link = report.output_path(report_dir).replace(report_dir, "..")
 		table_records.append(report.create_record(report_link))
 	return template.replace(GdUnitHtmlPatterns.TABLE_BY_TESTSUITES, "\n".join(table_records))

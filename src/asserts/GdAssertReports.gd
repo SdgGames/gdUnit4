@@ -5,8 +5,9 @@ const LAST_ERROR = "last_assert_error_message"
 const LAST_ERROR_LINE = "last_assert_error_line"
 
 
-static func report_success(_line_number :int) -> void:
+static func report_success() -> void:
 	GdUnitSignals.instance().gdunit_set_test_failed.emit(false)
+	GdAssertReports.set_last_error_line_number(-1)
 	Engine.remove_meta(LAST_ERROR)
 
 
@@ -17,6 +18,7 @@ static func report_warning(message :String, line_number :int) -> void:
 
 static func report_error(message:String, line_number :int) -> void:
 	GdUnitSignals.instance().gdunit_set_test_failed.emit(true)
+	GdAssertReports.set_last_error_line_number(line_number)
 	Engine.set_meta(LAST_ERROR, message)
 	# if we expect to fail we handle as success test
 	if is_expect_fail():
@@ -53,4 +55,5 @@ static func current_failure() -> String:
 
 
 static func send_report(report :GdUnitReport) -> void:
-	GdUnitSignals.instance().gdunit_report.emit(report)
+	var execution_context_id := GdUnitThreadManager.get_current_context().get_execution_context_id()
+	GdUnitSignals.instance().gdunit_report.emit(execution_context_id, report)

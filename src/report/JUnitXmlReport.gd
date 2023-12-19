@@ -3,6 +3,8 @@
 class_name JUnitXmlReport
 extends RefCounted
 
+const GdUnitTools := preload("res://addons/gdUnit4/src/core/GdUnitTools.gd")
+
 const ATTR_CLASSNAME := "classname"
 const ATTR_ERRORS := "errors"
 const ATTR_FAILURES := "failures"
@@ -21,13 +23,11 @@ const HEADER := '<?xml version="1.0" encoding="UTF-8" ?>\n'
 
 var _report_path :String
 var _iteration :int
-var _rtf :RichTextLabel
 
 
-func _init(path :String,iteration :int,rtf :RichTextLabel):
+func _init(path :String,iteration :int):
 	_iteration = iteration
 	_report_path = path
-	_rtf = rtf
 
 
 func write(report :GdUnitReportSummary) -> String:
@@ -78,7 +78,7 @@ func build_test_cases(suite_report :GdUnitTestSuiteReport) -> Array:
 	for index in suite_report.reports().size():
 		var report :GdUnitTestCaseReport = suite_report.reports()[index]
 		test_cases.append( XmlElement.new("testcase")\
-			.attribute(ATTR_NAME, report.name())\
+			.attribute(ATTR_NAME, encode_xml(report.name()))\
 			.attribute(ATTR_CLASSNAME, report.suite_name())\
 			.attribute(ATTR_TIME, JUnitXmlReport.to_time(report.duration()))\
 			.add_childs(build_reports(report)))
@@ -109,9 +109,7 @@ func build_reports(testReport :GdUnitTestCaseReport) -> Array:
 
 
 func convert_rtf_to_text(bbcode :String) -> String:
-	_rtf.clear()
-	_rtf.parse_bbcode(bbcode)
-	return _rtf.text
+	return GdUnitTools.richtext_normalize(bbcode)
 
 
 static func to_type(type :int) -> String:
@@ -135,6 +133,10 @@ static func to_type(type :int) -> String:
 
 static func to_time(duration :int) -> String:
 	return "%4.03f" % (duration / 1000.0)
+
+
+static func encode_xml(value :String) -> String:
+	return value.xml_escape(true)
 
 
 #static func to_ISO8601_datetime() -> String:
