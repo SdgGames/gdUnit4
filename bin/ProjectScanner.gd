@@ -59,10 +59,10 @@ class SourceScanner extends Node:
 
 		if _state == STARTUP:
 			if _fs.is_scanning():
-				_console.progressBar(_fs.get_scanning_progress() * 100 as int)
+				_console.progress_bar(_fs.get_scanning_progress() * 100 as int)
 			# we wait 10s in addition to be on the save site the scanning is done
 			if _elapsed_time > 10.0:
-				_console.progressBar(100)
+				_console.progress_bar(100)
 				_console.new_line()
 				_console.prints_color("initial scanning ... done", Color.DARK_GREEN)
 				_state = SCAN
@@ -76,14 +76,14 @@ class SourceScanner extends Node:
 		_fs.scan_sources()
 		await get_tree().create_timer(5).timeout
 		_console.prints_color("Scan: ", Color.SANDY_BROWN)
-		_console.progressBar(0)
+		_console.progress_bar(0)
 		await get_tree().process_frame
 		_fs.scan()
 		while _fs.is_scanning():
 			await get_tree().process_frame
-			_console.progressBar(_fs.get_scanning_progress() * 100 as int)
+			_console.progress_bar(_fs.get_scanning_progress() * 100 as int)
 		await get_tree().create_timer(10).timeout
-		_console.progressBar(100)
+		_console.progress_bar(100)
 		_console.new_line()
 		_plugin.free()
 		_console.prints_color("""
