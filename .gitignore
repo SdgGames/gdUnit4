@@ -1,2 +1,3 @@
 # Generated each time we run the test suite.
+*.uid
 GdUnitRunner.cfg
