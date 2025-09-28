@@ -1,3 +1,4 @@
 # Generated each time we run the test suite.
 *.uid
+*.import
 GdUnitRunner.cfg
