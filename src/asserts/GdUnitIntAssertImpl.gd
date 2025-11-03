@@ -39,13 +39,13 @@ func failure_message() -> String:
 	return _base.failure_message()
 
 
-func override_failure_message(message :String) -> GdUnitIntAssert:
+func override_failure_message(message: String) -> GdUnitIntAssert:
 	@warning_ignore("return_value_discarded")
 	_base.override_failure_message(message)
 	return self
 
 
-func append_failure_message(message :String) -> GdUnitIntAssert:
+func append_failure_message(message: String) -> GdUnitIntAssert:
 	@warning_ignore("return_value_discarded")
 	_base.append_failure_message(message)
 	return self
@@ -63,13 +63,13 @@ func is_not_null() -> GdUnitIntAssert:
 	return self
 
 
-func is_equal(expected :Variant) -> GdUnitIntAssert:
+func is_equal(expected: Variant) -> GdUnitIntAssert:
 	@warning_ignore("return_value_discarded")
 	_base.is_equal(expected)
 	return self
 
 
-func is_not_equal(expected :Variant) -> GdUnitIntAssert:
+func is_not_equal(expected: Variant) -> GdUnitIntAssert:
 	@warning_ignore("return_value_discarded")
 	_base.is_not_equal(expected)
 	return self
